@@ -1,0 +1,10 @@
+[
+  {"id":"P001","title":"Northstar Wireless Earbuds X2","description":"Bluetooth earbuds with charging case and USB-C connector","category":"electronics","price":49.99,"currency":"USD","brand":"Northstar"},
+  {"id":"P002","title":"Northstar Wireless Earbuds X2","description":"Bluetooth earbuds with charging case and USB-C connector","category":"electronics","price":49.99,"currency":"USD","brand":"Northstar"},
+  {"id":"P003","title":"Willow Cotton Crew Tee","description":"100% cotton short-sleeve T-shirt, size M","category":"clothing","price":18,"currency":"USD","brand":"Willow"},
+  {"id":"P004","title":"Copperfield Ceramic Mug","description":"Copperfield Ceramic Mug","category":"home","price":0,"currency":"USD","brand":"Copperfield"},
+  {"id":"P005","title":"Sunfield Oat Drink 1L","description":"Shelf-stable oat drink, 1 liter","category":"grocery","price":3.5,"currency":"USD","brand":"Sunfield"},
+  {"id":"P006","title":"Peakline Yoga Mat","description":"Non-slip exercise mat, 6 mm thick","category":"sporting goods","price":25,"currency":"USD","brand":"Peakline"},
+  {"id":"P007","title":"Lumen Face Cleanser","description":"Gentle daily facial cleanser, 150 ml","category":"beauty","price":12.5,"currency":"USD","brand":"Lumen"},
+  {"id":"P008","title":"Willow Cotton Crew Tee Blue","description":"Blue cotton short-sleeve T-shirt, size L","category":"clothing","price":19,"currency":"USD","brand":"Willow"}
+]
