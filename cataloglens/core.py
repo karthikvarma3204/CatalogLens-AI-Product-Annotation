@@ -15,7 +15,8 @@ def audit(item):
         if not str(item.get(field, "")).strip():
             flags.append({"code": "missing_field", "field": field, "reason": f"Missing {field}"})
     try:
-        if float(item.get("price", "")) <= 0:
+        price = float(item.get("price", ""))
+        if not (price > 0 and price < float("inf")):
             flags.append({"code": "invalid_price", "field": "price", "reason": "Price must be positive"})
     except (TypeError, ValueError):
         if str(item.get("price", "")).strip():
@@ -43,13 +44,34 @@ def duplicate_candidates(items, threshold=0.87):
     return pairs
 
 def agreement(rows):
-    """Observed agreement across item IDs with at least two independent labels."""
+    """Compare one current decision per reviewer and expose adjudication status."""
     groups = {}
+    legacy_count = {}
+    adjudicated = set()
     for row in rows:
-        groups.setdefault(row["item_id"], []).append(row["label"])
-    compared = [v for v in groups.values() if len(v) >= 2]
+        if row.get("adjudicated"):
+            adjudicated.add(row["item_id"])
+            continue
+        reviewer = row.get("reviewer")
+        if reviewer is None:
+            index = legacy_count.get(row["item_id"], 0) + 1
+            legacy_count[row["item_id"]] = index
+            reviewer = f"legacy-{index}"
+        reviewer = str(reviewer).strip().casefold()
+        if not reviewer:
+            continue
+        groups.setdefault(row["item_id"], {})[reviewer] = row
+    compared = {key: list(reviewers.values()) for key, reviewers in groups.items() if len(reviewers) >= 2}
     if not compared:
-        return {"items_compared": 0, "unanimous_agreement": None, "disagreements": []}
-    unanimous = sum(len(set(labels)) == 1 for labels in compared)
-    disagreements = [key for key, labels in groups.items() if len(labels) >= 2 and len(set(labels)) > 1]
-    return {"items_compared": len(compared), "unanimous_agreement": round(unanimous / len(compared), 3), "disagreements": disagreements}
+        return {"items_compared": 0, "unanimous_agreement": None, "quality_agreement": None, "disagreements": [], "quality_disagreements": [], "adjudicated": sorted(adjudicated)}
+    labels_agree = {key: len({row["label"] for row in rows}) == 1 for key, rows in compared.items()}
+    quality_agree = {key: len({row.get("quality") for row in rows}) == 1 for key, rows in compared.items()}
+    return {
+        "items_compared": len(compared),
+        "unanimous_agreement": round(sum(labels_agree.values()) / len(compared), 3),
+        "quality_agreement": round(sum(quality_agree.values()) / len(compared), 3),
+        "disagreements": sorted(key for key, agree in labels_agree.items() if not agree),
+        "quality_disagreements": sorted(key for key, agree in quality_agree.items() if not agree),
+        "adjudicated": sorted(adjudicated),
+    }
+

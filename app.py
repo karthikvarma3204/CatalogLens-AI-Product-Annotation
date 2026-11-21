@@ -1,10 +1,12 @@
 """CatalogLens: evidence-first product data annotation workbench."""
-import csv
-import io
+import hashlib
 import json
+import os
 from pathlib import Path
 import streamlit as st
 from cataloglens.core import CATEGORIES, audit, duplicate_candidates, agreement
+from cataloglens.io import CatalogValidationError, dataset_fingerprint, parse_catalog_csv, validate_record_shape
+from cataloglens.storage import AnnotationStore, export_records
 
 st.set_page_config(page_title="CatalogLens | Annotation Studio", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
@@ -19,7 +21,15 @@ html,body,[class*="css"],[data-testid="stApp"] {font-family:'DM Sans',sans-serif
 h1,h2,h3 {font-family:'Space Grotesk',sans-serif!important;letter-spacing:-.04em;}
 h1 {font-size:3rem!important;}
 h3 {font-size:1.35rem!important;}
-p,small,label {color:#cbd6e9;}
+p,small,label,[data-testid="stCaptionContainer"],.stMarkdown p {color:#d3dded;}
+[data-testid="stSidebar"] * {color:#e1e9f7;}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {color:#c2cee0;}
+[data-testid="stSidebar"] button {border-color:#546582;color:#eef3fc;}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] {background:#18243a;border:1px solid #3c4d6b;}
+[data-testid="stWidgetLabel"] p,[data-testid="stWidgetLabel"] label {color:#e2eaf7!important;}
+[data-testid="stDataFrame"] {border:1px solid #384967;border-radius:12px;}
+[data-testid="stAlert"] p {color:inherit!important;}
+[data-testid="stProgressBar"] > div {background:#8395ff;}
 [data-testid="stMetric"] {background:linear-gradient(145deg,#192540,#111a2d);border:1px solid #31405e;padding:1.2rem 1.3rem;border-radius:17px;}
 [data-testid="stMetricLabel"] {color:#a8b8d2;}
 [data-testid="stMetricValue"] {color:#f4f7ff;font-family:'Space Grotesk';}
@@ -43,6 +53,15 @@ div.stButton button,div.stDownloadButton button {border-radius:10px;}
 .product-desc {color:#b8c8e3;line-height:1.7;}
 .meta {font-size:.84rem;color:#9bacc9;margin-top:.6rem;}
 .footer {color:#8697b4;font-size:.78rem;margin-top:2rem;padding-top:1rem;border-top:1px solid #2a3852;}
+@media (max-width: 760px) {
+  .block-container {padding:1rem .8rem 2rem;}
+  h1 {font-size:2.15rem!important;}
+  .hero {padding:1rem;border-radius:14px;}
+  .hero-title {font-size:1.9rem;}
+  [data-testid="stMetric"] {padding:.8rem;border-radius:12px;}
+  [data-testid="stTabs"] [data-baseweb="tab-list"] {overflow-x:auto;flex-wrap:nowrap;}
+  [data-testid="stTabs"] button {padding:.55rem .65rem;white-space:nowrap;}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,20 +84,29 @@ with st.sidebar:
 
 if upload:
     try:
-        items = list(csv.DictReader(io.StringIO(upload.getvalue().decode("utf-8-sig"))))
-        if not items or not {"id", "title"}.issubset(items[0]):
-            st.error("CSV needs at least id and title columns.")
-            st.stop()
-    except (UnicodeError, csv.Error) as exc:
-        st.error(f"Could not read CSV: {exc}")
+        items = [validate_record_shape(item) for item in parse_catalog_csv(upload.getvalue())]
+    except CatalogValidationError as exc:
+        st.error(str(exc))
         st.stop()
+    dataset_key = dataset_fingerprint(items)
 else:
     items = sample
+    dataset_key = dataset_fingerprint(items, source="synthetic-demo-v1")
 
-dataset_key = ("upload", upload.name, len(upload.getvalue())) if upload else ("sample",)
-if st.session_state.get("dataset_key") != dataset_key:
-    st.session_state.dataset_key = dataset_key
-    st.session_state.labels = []
+store = None
+storage_path = os.environ.get("CATALOGLENS_DB_PATH", "").strip()
+if storage_path:
+    try:
+        store = AnnotationStore(storage_path)
+    except (OSError, ValueError) as exc:
+        st.warning(f"Persistent annotation storage is unavailable: {exc}")
+if store:
+    persisted = store.list(dataset_key)
+    st.session_state.labels = persisted
+else:
+    session_key = "labels_" + dataset_key
+    st.session_state.setdefault(session_key, [])
+    st.session_state.labels = st.session_state[session_key]
 
 issues = {str(p.get("id")): audit(p) for p in items}
 duplicates = duplicate_candidates(items)
@@ -130,43 +158,71 @@ with tab1:
             quality=st.selectbox("Listing quality",["acceptable","needs_correction","insufficient_evidence"])
             confidence=st.slider("Decision confidence",1,5,3)
             evidence=st.text_area("Evidence and correction rationale",placeholder="Example: Title and description identify wireless earbuds, supporting Electronics.",height=125)
-            submitted=st.form_submit_button("Save review decision",use_container_width=True)
+            submitted=st.form_submit_button("Save review decision",width="stretch")
             if submitted:
                 if not reviewer.strip() or not evidence.strip():
                     st.error("Reviewer ID and evidence are required.")
                 else:
                     record={"item_id":str(p.get("id")),"reviewer":reviewer.strip(),"label":label,"quality":quality,"confidence":confidence,"evidence":evidence.strip()}
-                    st.session_state.labels=[r for r in st.session_state.labels if not (r["item_id"]==record["item_id"] and r["reviewer"]==record["reviewer"])]
-                    st.session_state.labels.append(record)
-                    st.success("Decision saved in this session.")
+                    if store:
+                        store.save(dataset_key, record)
+                        st.session_state.labels = store.list(dataset_key)
+                    else:
+                        prior = [r for r in st.session_state.labels if not (r["item_id"] == record["item_id"] and r["reviewer"].casefold() == record["reviewer"].casefold())]
+                        prior.append(record)
+                        st.session_state.labels = prior
+                        st.session_state["labels_" + dataset_key] = prior
+                    st.success("Decision saved persistently." if store else "Decision saved in this session.")
     if st.session_state.labels:
         st.markdown("#### Saved decisions")
-        st.dataframe(st.session_state.labels,use_container_width=True,hide_index=True)
-        st.download_button("↓ Export annotation JSON",json.dumps(st.session_state.labels,indent=2),file_name="cataloglens_annotations.json",mime="application/json")
+        st.dataframe(export_records(st.session_state.labels),width="stretch",hide_index=True)
+        st.download_button("↓ Export annotation JSON",json.dumps(export_records(st.session_state.labels),indent=2),file_name="cataloglens_annotations.json",mime="application/json")
 with tab2:
     st.markdown("### Quality intelligence")
     st.caption("Transparent, rule-based signals for human triage—not automated truth labels.")
     records=[{"Product":k,"Issue":f["code"].replace("_"," ").title(),"Field":f["field"],"Evidence":f["reason"]} for k,fs in issues.items() for f in fs]
     st.markdown("#### Listing integrity checks")
-    if records: st.dataframe(records,use_container_width=True,hide_index=True)
+    if records: st.dataframe(records,width="stretch",hide_index=True)
     else: st.success("No issues detected by the configured rules.")
     st.markdown("#### Potential duplicate pairs")
     if duplicates:
-        st.dataframe([{"Product A":x["left"],"Product B":x["right"],"Title similarity":x["similarity"]} for x in duplicates],use_container_width=True,hide_index=True)
+        st.dataframe([{"Product A":x["left"],"Product B":x["right"],"Title similarity":x["similarity"]} for x in duplicates],width="stretch",hide_index=True)
     else: st.info("No duplicate candidates found at the current threshold.")
     st.caption("Brand-aware fuzzy title matching may include product variants. Review packaging and SKUs before merging.")
 with tab3:
     st.markdown("### Independent review consistency")
     st.caption("Compare decisions on the same item across two or more reviewer IDs.")
     result=agreement(st.session_state.labels)
-    x,y=st.columns(2)
+    x,y,z=st.columns(3)
     x.metric("Items with multiple reviews",result["items_compared"])
     y.metric("Unanimous agreement",f'{result["unanimous_agreement"]:.0%}' if result["unanimous_agreement"] is not None else "Not yet available")
+    z.metric("Quality agreement",f'{result["quality_agreement"]:.0%}' if result["quality_agreement"] is not None else "Not yet available")
     if result["disagreements"]:
         st.warning("Adjudication required for: "+", ".join(result["disagreements"]))
     else:
         st.info("Create reviews for the same item under different reviewer IDs to compare labels.")
-    st.caption("This is observed unanimous category agreement, not Cohen's kappa or model accuracy.")
+    adjudication_queue = sorted(set(result["disagreements"] + result["quality_disagreements"]))
+    if adjudication_queue:
+        item_id = st.selectbox("Item to adjudicate", adjudication_queue)
+        adjudicator = st.text_input("Adjudicator ID", key="adjudicator_id")
+        final_label = st.selectbox("Final category", sorted(CATEGORIES), key="final_category")
+        final_quality = st.selectbox("Final quality decision", ["acceptable", "needs_correction", "insufficient_evidence"], key="final_quality")
+        final_evidence = st.text_area("Adjudication rationale", key="final_evidence")
+        if st.button("Save adjudication"):
+            if not adjudicator.strip() or not final_evidence.strip():
+                st.error("Adjudicator ID and rationale are required.")
+            else:
+                record={"item_id":item_id,"reviewer":adjudicator.strip(),"label":final_label,"quality":final_quality,"confidence":5,"evidence":final_evidence.strip(),"adjudicated":True,"adjudicator":adjudicator.strip()}
+                if store:
+                    store.adjudicate(dataset_key,item_id,record["adjudicator"],final_label,final_quality,record["evidence"])
+                    st.session_state.labels=store.list(dataset_key)
+                else:
+                    st.session_state.labels.append(record)
+                    st.session_state["labels_"+dataset_key]=st.session_state.labels
+                st.success("Adjudication recorded.")
+    elif result["items_compared"]:
+        st.success("No unresolved category or quality disagreements.")
+    st.caption("Agreement is item-level unanimous reviewer consensus, calculated once per reviewer. It is not Cohen's kappa or model accuracy.")
 with tab4:
     st.markdown("### Annotation protocol")
     st.markdown("""**01 · Inspect** — Read title, description, brand, category and price. Do not infer missing details.
@@ -181,5 +237,6 @@ with tab4:
 
 **06 · Export** — Download annotation JSON before ending the session.
 
-**Limitations:** Synthetic example catalog, deterministic QA heuristics, no trained model, no production data integrations, and no persistent database. Uploaded catalogs and annotations are held in the running Streamlit session.""")
+**Limitations:** Synthetic example catalog, deterministic QA heuristics, no trained model or production data integrations. Uploads are fingerprinted by content. Annotations stay in the session unless an operator configures `CATALOGLENS_DB_PATH` to a durable, private SQLite volume. Streamlit Community Cloud local storage is ephemeral; use an externally managed persistent volume for cross-restart retention.""")
 st.markdown('<div class="footer">CATALOGLENS / PRODUCT INTELLIGENCE LAB · Built for transparent, human-led AI data quality evaluation · Portfolio demonstration</div>',unsafe_allow_html=True)
+

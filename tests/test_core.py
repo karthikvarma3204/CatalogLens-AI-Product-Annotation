@@ -21,7 +21,34 @@ def test_duplicate_candidates_same_brand():
 
 def test_agreement():
     rows = [{"item_id":"1","label":"home"},{"item_id":"1","label":"home"},{"item_id":"2","label":"home"},{"item_id":"2","label":"other"}]
-    assert agreement(rows) == {"items_compared":2,"unanimous_agreement":0.5,"disagreements":["2"]}
+    result = agreement(rows)
+    assert result["items_compared"] == 2
+    assert result["unanimous_agreement"] == 0.5
+    assert result["disagreements"] == ["2"]
 
 def test_no_agreement_yet():
     assert agreement([{"item_id":"1","label":"home"}])["unanimous_agreement"] is None
+
+def test_agreement_counts_unique_reviewers_and_quality():
+    rows = [
+        {"item_id":"1","reviewer":"a","label":"home","quality":"acceptable"},
+        {"item_id":"1","reviewer":"a","label":"other","quality":"needs_correction"},
+        {"item_id":"1","reviewer":"b","label":"home","quality":"acceptable"},
+    ]
+    result = agreement(rows)
+    assert result["items_compared"] == 1
+    assert result["unanimous_agreement"] == 0
+    assert result["quality_agreement"] == 0
+    assert result["disagreements"] == ["1"]
+
+def test_adjudication_is_excluded_from_reviewer_agreement():
+    rows = [
+        {"item_id":"1","reviewer":"a","label":"home","quality":"acceptable"},
+        {"item_id":"1","reviewer":"b","label":"other","quality":"needs_correction"},
+        {"item_id":"1","reviewer":"lead","label":"home","quality":"acceptable","adjudicated":True},
+    ]
+    result = agreement(rows)
+    assert result["disagreements"] == ["1"]
+    assert result["quality_disagreements"] == ["1"]
+    assert result["adjudicated"] == ["1"]
+
