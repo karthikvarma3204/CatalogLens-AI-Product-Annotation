@@ -193,6 +193,10 @@ with tab3:
     st.markdown("### Independent review consistency")
     st.caption("Compare decisions on the same item across two or more reviewer IDs.")
     result=agreement(st.session_state.labels)
+    # Tolerate a stale imported module during Streamlit Cloud hot reloads.
+    result.setdefault("quality_agreement", None)
+    result.setdefault("quality_disagreements", [])
+    result.setdefault("adjudicated", [])
     x,y,z=st.columns(3)
     x.metric("Items with multiple reviews",result["items_compared"])
     y.metric("Unanimous agreement",f'{result["unanimous_agreement"]:.0%}' if result["unanimous_agreement"] is not None else "Not yet available")
